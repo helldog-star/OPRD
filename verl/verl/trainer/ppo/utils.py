@@ -35,6 +35,9 @@ class Role(Enum):
     RefPolicy = 4
     RewardModel = 5
     ActorRolloutRef = 6
+    # Multi-teacher MOPD: one resident RM worker per domain (sample-level routing).
+    RewardModelMath = 7
+    RewardModelCode = 8
 
     def __str__(self):
         return self._get_role_string()
@@ -48,6 +51,8 @@ class Role(Enum):
             Role.RefPolicy: "ref",
             Role.RewardModel: "rm",
             Role.ActorRolloutRef: "actor_rollout_ref",
+            Role.RewardModelMath: "rm_math",
+            Role.RewardModelCode: "rm_code",
         }
         return role_mapping.get(self, self.name.lower())
 
@@ -61,11 +66,16 @@ class Role(Enum):
             "ref": cls.RefPolicy,
             "rm": cls.RewardModel,
             "actor_rollout_ref": cls.ActorRolloutRef,
+            "rm_math": cls.RewardModelMath,
+            "rm_code": cls.RewardModelCode,
         }
         role = string_mapping.get(name.lower())
         if role is None:
             raise ValueError(f"No Role found for string: {name}")
         return role
+
+
+MULTI_TEACHER_RM_ROLES = (Role.RewardModelMath, Role.RewardModelCode)
 
 
 def need_reference_policy(
@@ -79,7 +89,9 @@ def need_reward_model(
     role_worker_mapping: dict[Role, WorkerType],
 ) -> bool:
     """Given a role worker mapping, do we need reward model."""
-    return Role.RewardModel in role_worker_mapping
+    return Role.RewardModel in role_worker_mapping or any(
+        role in role_worker_mapping for role in MULTI_TEACHER_RM_ROLES
+    )
 
 
 def need_critic(config: DictConfig) -> bool:

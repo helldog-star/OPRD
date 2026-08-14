@@ -33,7 +33,25 @@ from io import StringIO
 from unittest.mock import mock_open, patch
 
 import numpy as np
-from pyext import RuntimeModule
+try:
+    from pyext import RuntimeModule
+except Exception:  # pyext is unmaintained and broken on Python 3.12+
+    import types
+
+    class RuntimeModule:  # noqa: N801 — match pyext API
+        @staticmethod
+        def from_string(name: str, _doc: str, code: str):
+            module = types.ModuleType(name)
+            exec(code, module.__dict__)  # noqa: S102
+            return module
+
+
+def _enable_faulthandler():
+    try:
+        faulthandler.enable()
+    except OSError:
+        # Can fail under memory pressure (ENOMEM); scoring should continue.
+        pass
 
 
 def truncatefn(s, length=300):
@@ -254,7 +272,7 @@ def run_test(in_outs, test=None, debug=False, timeout=15):
                 )
             if which_type == CODE_TYPE.call_based:  # Call-based
                 signal.alarm(timeout)
-                faulthandler.enable()
+                _enable_faulthandler()
                 try:
                     output = method(*inputs)
                     raw_true_output = output
@@ -306,7 +324,7 @@ def run_test(in_outs, test=None, debug=False, timeout=15):
                         f"{type(inputs)}, {output == [in_outs['outputs'][index]]}"
                     )
             elif which_type == CODE_TYPE.standard_input:  # Standard input
-                faulthandler.enable()
+                _enable_faulthandler()
                 passed = False
 
                 if isinstance(inputs, list):

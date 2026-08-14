@@ -52,7 +52,14 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
-from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
+from verl.trainer.ppo.utils import (
+    MULTI_TEACHER_RM_ROLES,
+    Role,
+    WorkerType,
+    need_critic,
+    need_reference_policy,
+    need_reward_model,
+)
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
@@ -523,7 +530,10 @@ class RayPPOTrainer:
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
-        reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
+        # Keep ability for multi-teacher sample-level routing after rollout.
+        reward_model_keys = (
+            set({"data_source", "reward_model", "extra_info", "uid", "ability"}) & batch.non_tensor_batch.keys()
+        )
 
         # pop those keys for generation
         batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
@@ -538,6 +548,87 @@ class RayPPOTrainer:
             gen_batch.non_tensor_batch.update(batch.non_tensor_batch)
 
         return gen_batch
+
+    def _normalize_teacher_domain(self, ability) -> str:
+        """Map dataset ability / data_source tags onto multi-teacher domain keys."""
+        if ability is None:
+            return ""
+        if isinstance(ability, (bytes, np.bytes_)):
+            ability = ability.decode("utf-8", errors="ignore")
+        text = str(ability).strip().lower()
+        if text in self.rm_wg_by_domain:
+            return text
+        if "math" in text:
+            return "math"
+        if "code" in text or "coding" in text or "swe" in text:
+            return "code"
+        return text
+
+    def _merge_routed_teacher_data(self, batch_size: int, parts: list[tuple[np.ndarray, DataProto]]) -> DataProto:
+        """Scatter per-domain teacher DataProto outputs back into original batch order."""
+        if not parts:
+            raise RuntimeError("multi-teacher RM routing produced no scored parts")
+        if len(parts) == 1:
+            idxs, scored = parts[0]
+            if len(idxs) == batch_size and np.array_equal(idxs, np.arange(batch_size)):
+                return scored
+        template = parts[0][1]
+        out_tensors = {}
+        for key, tensor in template.batch.items():
+            shape = list(tensor.shape)
+            shape[0] = batch_size
+            out_tensors[key] = tensor.new_zeros(shape)
+        for idxs, scored in parts:
+            for key, tensor in scored.batch.items():
+                if key not in out_tensors:
+                    shape = list(tensor.shape)
+                    shape[0] = batch_size
+                    out_tensors[key] = tensor.new_zeros(shape)
+                out_tensors[key][idxs] = tensor
+        return DataProto.from_dict(tensors=out_tensors, meta_info=dict(template.meta_info))
+
+    def _compute_rm_score(self, batch: DataProto) -> DataProto:
+        """Score with single RM or MOPD multi-teacher sample-level routing."""
+        if not getattr(self, "use_multi_teacher_rm", False):
+            return self.rm_wg.compute_rm_score(batch)
+
+        routing_key = OmegaConf.select(self.config, "reward_model.multi_teacher.routing_key") or "ability"
+        if routing_key not in batch.non_tensor_batch:
+            # Fallback: derive from data_source when ability was dropped.
+            if "data_source" in batch.non_tensor_batch:
+                keys = batch.non_tensor_batch["data_source"]
+            else:
+                raise KeyError(
+                    f"multi-teacher routing requires non_tensor_batch['{routing_key}'] "
+                    "(or data_source); pin ability in _get_gen_batch"
+                )
+        else:
+            keys = batch.non_tensor_batch[routing_key]
+
+        domains = np.array([self._normalize_teacher_domain(k) for k in keys], dtype=object)
+        parts = []
+        for domain, wg in self.rm_wg_by_domain.items():
+            idxs = np.where(domains == domain)[0]
+            if len(idxs) == 0:
+                continue
+            sub = batch.select_idxs(idxs)
+            size_divisor = getattr(wg, "world_size", 1) or 1
+            sub_padded, pad_size = pad_dataproto_to_divisor(sub, size_divisor)
+            scored = wg.compute_rm_score(sub_padded)
+            scored = unpad_dataproto(scored, pad_size=pad_size)
+            parts.append((idxs, scored))
+
+        unknown = sorted({d for d in domains.tolist() if d and d not in self.rm_wg_by_domain})
+        if unknown:
+            raise ValueError(
+                f"multi-teacher routing saw unknown domains {unknown}; "
+                f"known={list(self.rm_wg_by_domain)}"
+            )
+        if not parts:
+            raise RuntimeError(
+                f"multi-teacher RM routing matched no samples; domains_in_batch={sorted(set(domains.tolist()))}"
+            )
+        return self._merge_routed_teacher_data(len(batch), parts)
 
     def _validate(self):
         data_source_lst = []
@@ -722,10 +813,35 @@ class RayPPOTrainer:
 
         # create a reward model if reward_fn is None
         if self.use_rm:
-            # we create a RM here
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
-            rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
-            self.resource_pool_to_cls[resource_pool][str(Role.RewardModel)] = rm_cls
+            mt = OmegaConf.select(self.config, "reward_model.multi_teacher") or {}
+            self.use_multi_teacher_rm = bool(mt.get("enable", False)) if hasattr(mt, "get") else False
+            self.rm_wg_by_domain = {}
+            if self.use_multi_teacher_rm:
+                teachers = mt.get("teachers", {}) or {}
+                domain_to_role = {
+                    "math": Role.RewardModelMath,
+                    "code": Role.RewardModelCode,
+                }
+                for domain, role in domain_to_role.items():
+                    if role not in self.role_worker_mapping:
+                        continue
+                    resource_pool = self.resource_pool_manager.get_resource_pool(role)
+                    # Per-domain teacher config: inherit reward_model knobs, override path.
+                    teacher_cfg = OmegaConf.merge(
+                        self.config.reward_model,
+                        {"model": {"path": teachers[domain].path}, "multi_teacher": {"enable": False}},
+                    )
+                    rm_cls = RayClassWithInitArgs(self.role_worker_mapping[role], config=teacher_cfg)
+                    self.resource_pool_to_cls[resource_pool][str(role)] = rm_cls
+            else:
+                resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
+                rm_cls = RayClassWithInitArgs(
+                    self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model
+                )
+                self.resource_pool_to_cls[resource_pool][str(Role.RewardModel)] = rm_cls
+        else:
+            self.use_multi_teacher_rm = False
+            self.rm_wg_by_domain = {}
 
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
@@ -770,8 +886,23 @@ class RayPPOTrainer:
         self.rm_wg = None
         # initalization of rm_wg will be deprecated in the future
         if self.use_rm:
-            self.rm_wg = all_wg[str(Role.RewardModel)]
-            self.rm_wg.init_model()
+            if self.use_multi_teacher_rm:
+                domain_to_role = {
+                    "math": Role.RewardModelMath,
+                    "code": Role.RewardModelCode,
+                }
+                for domain, role in domain_to_role.items():
+                    if str(role) not in all_wg:
+                        continue
+                    wg = all_wg[str(role)]
+                    wg.init_model()
+                    self.rm_wg_by_domain[domain] = wg
+                # Keep rm_wg as math teacher for any legacy single-wg call sites.
+                self.rm_wg = self.rm_wg_by_domain.get("math") or next(iter(self.rm_wg_by_domain.values()))
+                print(f"[MOPD] resident teachers ready: {list(self.rm_wg_by_domain)}")
+            else:
+                self.rm_wg = all_wg[str(Role.RewardModel)]
+                self.rm_wg.init_model()
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg[str(Role.ActorRollout)]
@@ -916,7 +1047,11 @@ class RayPPOTrainer:
             if self.use_critic:
                 self.critic_wg.start_profile(profile_step=self.global_steps)
             if self.use_rm:
-                self.rm_wg.start_profile(profile_step=self.global_steps)
+                if getattr(self, "use_multi_teacher_rm", False) and self.rm_wg_by_domain:
+                    for wg in self.rm_wg_by_domain.values():
+                        wg.start_profile(profile_step=self.global_steps)
+                elif self.rm_wg is not None:
+                    self.rm_wg.start_profile(profile_step=self.global_steps)
 
     def _stop_profiling(self, do_profile: bool) -> None:
         """Stop profiling for all worker groups if profiling is enabled."""
@@ -927,7 +1062,11 @@ class RayPPOTrainer:
             if self.use_critic:
                 self.critic_wg.stop_profile()
             if self.use_rm:
-                self.rm_wg.stop_profile()
+                if getattr(self, "use_multi_teacher_rm", False) and self.rm_wg_by_domain:
+                    for wg in self.rm_wg_by_domain.values():
+                        wg.stop_profile()
+                elif self.rm_wg is not None:
+                    self.rm_wg.stop_profile()
 
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix="global_seqlen", keep_minibatch=False):
         """Reorder the data on single controller such that each dp rank gets similar total tokens"""
@@ -1083,7 +1222,7 @@ class RayPPOTrainer:
                                 # pass global_steps and is_plot config to rm_wg
                                 batch.meta_info["global_steps"] = self.global_steps
                                 batch.meta_info["is_plot"] = self.config.trainer.get("is_plot", False)
-                                rm_scores = self.rm_wg.compute_rm_score(batch)
+                                rm_scores = self._compute_rm_score(batch)
                                 batch = batch.union(rm_scores)
                             reward_baseline_tensor, _ = compute_reward(batch, self.reward_fn)
                             reward_baseline_tensor = reward_baseline_tensor.sum(dim=-1)
@@ -1176,7 +1315,7 @@ class RayPPOTrainer:
                                     batch = batch.union(old_log_prob)
 
                             with marked_timer("compute_rm_score", timing_raw, color="magenta"):
-                                teacher_data = self.rm_wg.compute_rm_score(batch)
+                                teacher_data = self._compute_rm_score(batch)
                                 batch = batch.union(teacher_data)
 
                             if rep_distillation_only:

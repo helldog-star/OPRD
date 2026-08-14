@@ -12,6 +12,14 @@ enable_resource_pool: False
 n_gpus_per_node: 0
 nnodes: 0
 
+# Multi-teacher on-policy distillation (MOPD-style): keep one resident teacher per
+# domain and route each sample by `routing_key` (default: ability). When enable=True,
+# `model.path` is unused; set teachers.<domain>.path instead (math/code for the pilot).
+multi_teacher:
+  enable: False
+  routing_key: ability
+  teachers: {}
+
 # FSDP strategy: "fsdp" or "fsdp2"
 strategy: ???
 

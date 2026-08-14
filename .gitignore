@@ -120,6 +120,9 @@ ENV/
 # data
 #*.parquet
 #datasets
+# Generated MOPD mixes (rebuild with scripts/prepare_mopd_*.py; keep out of git — >100MB)
+datasets/mopd_math_code_mix_*.parquet
+datasets/test_data/mopd_val_mix_full.parquet
 
 
 # local logs

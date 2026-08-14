@@ -199,30 +199,59 @@ class TaskRunner:
         return resource_pool_manager
 
     def add_reward_model_worker(self, config):
-        """Add reward model worker if enabled."""
+        """Add reward model worker if enabled.
+
+        When reward_model.multi_teacher.enable is True, register one resident
+        RewardModelWorker per domain (math/code) for MOPD-style sample routing.
+        Otherwise keep the single-teacher RewardModel path.
+        """
         from verl.trainer.ppo.ray_trainer import Role
 
-        if config.reward_model.enable:
-            use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
-            if use_legacy_worker_impl in ["auto", "enable"]:
-                if config.reward_model.strategy in {"fsdp", "fsdp2"}:
-                    from verl.workers.fsdp_workers import RewardModelWorker
-                elif config.reward_model.strategy == "megatron":
-                    from verl.workers.megatron_workers import RewardModelWorker
-                else:
-                    raise NotImplementedError
-            elif use_legacy_worker_impl == "disable":
-                from verl.workers.roles import RewardModelWorker
+        if not config.reward_model.enable:
+            return
 
-                print("Using new worker implementation")
+        use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
+        if use_legacy_worker_impl in ["auto", "enable"]:
+            if config.reward_model.strategy in {"fsdp", "fsdp2"}:
+                from verl.workers.fsdp_workers import RewardModelWorker
+            elif config.reward_model.strategy == "megatron":
+                from verl.workers.megatron_workers import RewardModelWorker
             else:
-                raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
+                raise NotImplementedError
+        elif use_legacy_worker_impl == "disable":
+            from verl.workers.roles import RewardModelWorker
 
+            print("Using new worker implementation")
+        else:
+            raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
+
+        pool_name = "reward_pool" if config.reward_model.enable_resource_pool else "global_pool"
+        mt = OmegaConf.select(config, "reward_model.multi_teacher") or {}
+        mt_enable = bool(mt.get("enable", False)) if hasattr(mt, "get") else False
+
+        if mt_enable:
+            teachers = mt.get("teachers", {}) or {}
+            domain_to_role = {
+                "math": Role.RewardModelMath,
+                "code": Role.RewardModelCode,
+            }
+            missing = [d for d in domain_to_role if d not in teachers or not teachers[d].get("path")]
+            if missing:
+                raise ValueError(
+                    "reward_model.multi_teacher.enable=True requires teachers.<domain>.path "
+                    f"for domains {list(domain_to_role)}; missing={missing}"
+                )
+            remote_cls = ray.remote(RewardModelWorker)
+            for domain, role in domain_to_role.items():
+                self.role_worker_mapping[role] = remote_cls
+                self.mapping[role] = pool_name
+            print(
+                f"[MOPD] multi-teacher RM enabled: domains={list(domain_to_role)} "
+                f"pool={pool_name}"
+            )
+        else:
             self.role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
-            if config.reward_model.enable_resource_pool:
-                self.mapping[Role.RewardModel] = "reward_pool"
-            else:
-                self.mapping[Role.RewardModel] = "global_pool"
+            self.mapping[Role.RewardModel] = pool_name
 
     def add_ref_policy_worker(self, config, ref_policy_cls):
         """Add reference policy worker if KL loss or KL reward is used."""
