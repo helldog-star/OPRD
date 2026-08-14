@@ -90,17 +90,9 @@ fi
 export TRAIN_DATASET="$MIX_PARQUET"
 export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_8k}
 
-# Prebuilt validation only (do not rebuild here). Prepare with:
-#   python scripts/prepare_mopd_val_mix.py
-# Default train-time mix: AIME24(all) + MATH-500(100) + code(64).
+# Prebuilt val mix only (AIME24 + MATH-500 subsample + code subsample).
 export TEST_DATA_DIR=${TEST_DATA_DIR:-$SCRIPT_DIR/datasets/test_data}
-VAL_MIX=${VAL_MIX:-$TEST_DATA_DIR/mopd_val_mix.parquet}
-if [ ! -f "$VAL_MIX" ]; then
-    echo "[error] missing val file: $VAL_MIX"
-    echo "  build it first: python $SCRIPT_DIR/scripts/prepare_mopd_val_mix.py --out $VAL_MIX"
-    exit 1
-fi
-TEST_DATASET=${TEST_FILE:-$VAL_MIX}
+TEST_DATASET=${TEST_FILE:-$TEST_DATA_DIR/mopd_val_mix.parquet}
 echo "[mopd] val_files=$TEST_DATASET"
 
 export ACTOR_MODEL_NAME=$(basename "$ACTOR_MODEL_PATH")
