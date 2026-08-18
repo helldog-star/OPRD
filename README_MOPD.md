@@ -118,17 +118,19 @@ python scripts/prepare_mopd_mix.py --n_math 4000 --n_code 4000 \
   --out datasets/mopd_math_code_mix_8k.parquet
 ```
 
-验证集使用仓库内预构建的 `datasets/test_data/mopd_val_mix.parquet`（AIME24 + MATH-500 子集 + code 子集）。如需重做：
+验证集使用 `datasets/test_data/mopd_val_mix.parquet`（AIME24 + MATH-500 子集 + code 子集）。如需重做：
 
 ```bash
-python scripts/prepare_mopd_val_mix.py   # 若存在；或沿用现有 parquet
+python scripts/prepare_mopd_val_mix.py
 ```
 
-训练脚本在找不到 `MIX_PARQUET` 时会自动调用 `prepare_mopd_mix.py`。
+训练脚本**不会**自动预处理。train/val parquet 必须事先准备好，否则启动时报错退出。
 
 ---
 
 ## 4. 启动训练（8×A100）
+
+先完成 §3 的 train/val parquet，再启动训练。
 
 ### 4.1 MOPD-logits
 

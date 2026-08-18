@@ -37,8 +37,6 @@ export TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
 export WANDB_MODE=${WANDB_MODE:-offline}
 
 export MODEL_DIR=${MODEL_DIR:-/root/siton-tmp/home/liuxinyu/hf_models}
-export DATA_DIR=${DATA_DIR:-/root/siton-tmp/home/liuxinyu/hf_datasets}
-export GOPD_DATA_DIR=${GOPD_DATA_DIR:-$DATA_DIR/G-OPD-Training-Data}
 export PROJECT_PATH=${PROJECT_PATH:-./outputs}
 export PROJECT_NAME=${PROJECT_NAME:-MOPD_MultiTeacher}
 
@@ -100,21 +98,25 @@ export ACTOR_MODEL_PATH=${ACTOR_MODEL_PATH:-$MODEL_DIR/Qwen3-4B}
 export MATH_TEACHER_PATH=${MATH_TEACHER_PATH:-$MODEL_DIR/Qwen3-4B-Non-Thinking-RL-Math-Step1200}
 export CODE_TEACHER_PATH=${CODE_TEACHER_PATH:-$MODEL_DIR/Qwen3-4B-Non-Thinking-RL-Code-Step1200}
 
-# Default: 0.5/0.5 math:code balanced mix (see prepare_mopd_mix.py --balance).
+# Train/val parquets must already exist. Build them before launching, e.g.:
+#   python scripts/prepare_mopd_mix.py --out datasets/mopd_math_code_mix_balanced.parquet
+#   python scripts/prepare_mopd_val_mix.py
 MIX_PARQUET=${MIX_PARQUET:-$SCRIPT_DIR/datasets/mopd_math_code_mix_balanced.parquet}
-if [ ! -f "$MIX_PARQUET" ]; then
-    echo "[prep] building balanced mix $MIX_PARQUET from G-OPD data"
-    python "$SCRIPT_DIR/scripts/prepare_mopd_mix.py" \
-        --math "$GOPD_DATA_DIR/DeepMath-103K/train_filtered_level6.parquet" \
-        --code "$GOPD_DATA_DIR/Eurus/code_train.parquet" \
-        --balance --math_ratio 0.5 \
-        --out "$MIX_PARQUET"
-fi
 export TRAIN_DATASET="$MIX_PARQUET"
 export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_balanced}
 
 export TEST_DATA_DIR=${TEST_DATA_DIR:-$SCRIPT_DIR/datasets/test_data}
 TEST_DATASET=${TEST_FILE:-$TEST_DATA_DIR/mopd_val_mix.parquet}
+if [ ! -f "$TRAIN_DATASET" ]; then
+    echo "[mopd] missing train parquet: $TRAIN_DATASET" >&2
+    echo "[mopd] run: python scripts/prepare_mopd_mix.py --out $TRAIN_DATASET" >&2
+    exit 1
+fi
+if [ ! -f "$TEST_DATASET" ]; then
+    echo "[mopd] missing val parquet: $TEST_DATASET" >&2
+    echo "[mopd] run: python scripts/prepare_mopd_val_mix.py --out $TEST_DATASET" >&2
+    exit 1
+fi
 echo "[mopd] n_gpus=$N_GPUS train_batch=$TRAIN_BATCH_SIZE n=$N_RESPONSES resp=$MAX_RESP_LENGTH"
 echo "[mopd] train_files=$TRAIN_DATASET"
 echo "[mopd] val_files=$TEST_DATASET"

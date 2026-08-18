@@ -25,14 +25,7 @@ export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_8k}
 export MOPD_LOG_PREFIX=${MOPD_LOG_PREFIX:-mopd_logits_1gpu}
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-mopd_logits_1gpu_$(date +%Y-%m-%d_%H-%M-%S)}
 
-# Optional: build a small mix if missing
-if [ ! -f "$MIX_PARQUET" ]; then
-    GOPD_DATA_DIR=${GOPD_DATA_DIR:-${DATA_DIR:-/root/siton-tmp/home/liuxinyu/hf_datasets}/G-OPD-Training-Data}
-    python "$SCRIPT_DIR/scripts/prepare_mopd_mix.py" \
-        --math "$GOPD_DATA_DIR/DeepMath-103K/train_filtered_level6.parquet" \
-        --code "$GOPD_DATA_DIR/Eurus/code_train.parquet" \
-        --n_math 4000 --n_code 4000 \
-        --out "$MIX_PARQUET"
-fi
+export CODE_TEACHER_PATH=/root/siton-tmp/home/liuxinyu/hf_models/Qwen3-4B-Non-Thinking-RL-Code-Step300
+export MATH_TEACHER_PATH=/root/siton-tmp/home/liuxinyu/hf_models/Qwen3-4B-Non-Thinking-RL-Math-Step500
 
 exec bash "$SCRIPT_DIR/mopd_multi_teacher_logits.sh" "$@"
