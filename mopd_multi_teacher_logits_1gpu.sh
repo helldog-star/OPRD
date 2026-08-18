@@ -20,8 +20,8 @@ export RAY_OBJECT_STORE_MEMORY=${RAY_OBJECT_STORE_MEMORY:-10000000000}
 export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-200}
 export VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-True}
 
-export MIX_PARQUET=${MIX_PARQUET:-$SCRIPT_DIR/datasets/mopd_math_code_mix_8k.parquet}
-export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_8k}
+export MIX_DIR=${MIX_DIR:-$SCRIPT_DIR/datasets/mopd_math_code_mix_balanced}
+export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_balanced}
 export MOPD_LOG_PREFIX=${MOPD_LOG_PREFIX:-mopd_logits_1gpu}
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-mopd_logits_1gpu_$(date +%Y-%m-%d_%H-%M-%S)}
 

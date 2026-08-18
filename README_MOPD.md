@@ -98,24 +98,20 @@ huggingface-cli download Keven16/Qwen3-4B-Non-Thinking-RL-Code-Step1200 \
 
 ---
 
-## 3. 数据预处理（混合 train parquet）
+## 3. 数据预处理（分片 train parquet）
 
-路由键是行级字段 **`ability ∈ {math, code}`**。预处理脚本只保留 verl 需要的列并打标：
+路由键是行级字段 **`ability ∈ {math, code}`**。预处理写出一个**目录**：`math.parquet` + 若干 `code_*.parquet`（code 的 hidden tests 太大，不能合成单个 mix 文件）。训练时 verl 会把这些 shard 拼成一个 Dataset，再 `shuffle` 跨领域采样。
 
 ```bash
 # 默认：math:code = 0.5:0.5（按下采样较多一侧，受较少一侧数量限制）
 python scripts/prepare_mopd_mix.py \
   --math $GOPD_DATA_DIR/DeepMath-103K/train_filtered_level6.parquet \
   --code $GOPD_DATA_DIR/Eurus/code_train.parquet \
-  --out datasets/mopd_math_code_mix_balanced.parquet
+  --out datasets/mopd_math_code_mix_balanced
 
-# 可选：不做平衡，全量拼接（~7:3 自然比例）
+# 可选：不做平衡，全量写出
 python scripts/prepare_mopd_mix.py --no-balance \
-  --out datasets/mopd_math_code_mix_full.parquet
-
-# 可选：小规模冒烟
-python scripts/prepare_mopd_mix.py --n_math 4000 --n_code 4000 \
-  --out datasets/mopd_math_code_mix_8k.parquet
+  --out datasets/mopd_math_code_mix_full
 ```
 
 验证集使用 `datasets/test_data/mopd_val_mix.parquet`（AIME24 + MATH-500 子集 + code 子集）。如需重做：
@@ -124,7 +120,7 @@ python scripts/prepare_mopd_mix.py --n_math 4000 --n_code 4000 \
 python scripts/prepare_mopd_val_mix.py
 ```
 
-训练脚本**不会**自动预处理。train/val parquet 必须事先准备好，否则启动时报错退出。
+训练脚本**不会**自动预处理。`MIX_DIR` 和 val parquet 必须事先准备好，否则启动时报错退出。
 
 ---
 
@@ -145,7 +141,7 @@ export EXPERIMENT_NAME=mopd_logits_$(date +%Y-%m-%d_%H-%M-%S)
 
 # 可选覆盖
 # export TRAIN_BATCH_SIZE=1024 N_RESPONSES=1 MAX_RESP_LENGTH=16384
-# export MIX_PARQUET=$PWD/datasets/mopd_math_code_mix_full.parquet  # 若要用未平衡全量
+# export MIX_DIR=$PWD/datasets/mopd_math_code_mix_full  # 若要用未平衡全量
 
 nohup bash mopd_multi_teacher_logits.sh >/dev/null 2>&1 &
 # 日志：logs/mopd_logits_*.log
@@ -181,6 +177,6 @@ bash mopd_multi_teacher_logits_1gpu.sh
 bash mopd_multi_teacher_oprd_1gpu.sh
 ```
 
-单卡默认：`resp=4096`，`batch=8`，`n=4`，小混合集 `mopd_math_code_mix_8k.parquet`。**不能与 8 卡正式结果直接对比。**
+单卡默认：`resp=4096`，`batch=8`，`n=4`，`MIX_DIR=datasets/mopd_math_code_mix_balanced`。**不能与 8 卡正式结果直接对比。**
 
 ---

@@ -39,8 +39,8 @@ export ACTOR_MICRO_BATCH_SIZE_PER_GPU=${ACTOR_MICRO_BATCH_SIZE_PER_GPU:-1}
 export ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-True}
 export ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-True}
 
-export MIX_PARQUET=${MIX_PARQUET:-$SCRIPT_DIR/datasets/mopd_math_code_mix_8k.parquet}
-export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_8k}
+export MIX_DIR=${MIX_DIR:-$SCRIPT_DIR/datasets/mopd_math_code_mix_balanced}
+export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_balanced}
 
 # Reuse 1gpu logits wrapper env + OPRD flags via main logits launcher.
 exec bash "$SCRIPT_DIR/mopd_multi_teacher_logits.sh" "$@"

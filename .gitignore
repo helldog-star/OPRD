@@ -121,7 +121,9 @@ ENV/
 #*.parquet
 #datasets
 
+# MOPD train mix is large (code hidden tests); keep on HF, not in git.
 datasets/mopd_math_code_mix_*.parquet
+datasets/mopd_math_code_mix_*/
 datasets/test_data/mopd_val_mix_full.parquet
 
 

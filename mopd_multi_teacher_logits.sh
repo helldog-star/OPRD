@@ -98,20 +98,43 @@ export ACTOR_MODEL_PATH=${ACTOR_MODEL_PATH:-$MODEL_DIR/Qwen3-4B}
 export MATH_TEACHER_PATH=${MATH_TEACHER_PATH:-$MODEL_DIR/Qwen3-4B-Non-Thinking-RL-Math-Step1200}
 export CODE_TEACHER_PATH=${CODE_TEACHER_PATH:-$MODEL_DIR/Qwen3-4B-Non-Thinking-RL-Code-Step1200}
 
-# Train/val parquets must already exist. Build them before launching, e.g.:
-#   python scripts/prepare_mopd_mix.py --out datasets/mopd_math_code_mix_balanced.parquet
+# Train shards / val parquet must already exist. Build them before launching, e.g.:
+#   python scripts/prepare_mopd_mix.py --out datasets/mopd_math_code_mix_balanced
 #   python scripts/prepare_mopd_val_mix.py
-MIX_PARQUET=${MIX_PARQUET:-$SCRIPT_DIR/datasets/mopd_math_code_mix_balanced.parquet}
-export TRAIN_DATASET="$MIX_PARQUET"
-export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_balanced}
+# MIX_DIR is a directory of math.parquet + code_*.parquet (MIX_PARQUET is an alias).
+MIX_DIR=${MIX_DIR:-${MIX_PARQUET:-$SCRIPT_DIR/datasets/mopd_math_code_mix_balanced}}
+export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-$(basename "$MIX_DIR" .parquet)}
 
 export TEST_DATA_DIR=${TEST_DATA_DIR:-$SCRIPT_DIR/datasets/test_data}
 TEST_DATASET=${TEST_FILE:-$TEST_DATA_DIR/mopd_val_mix.parquet}
-if [ ! -f "$TRAIN_DATASET" ]; then
-    echo "[mopd] missing train parquet: $TRAIN_DATASET" >&2
-    echo "[mopd] run: python scripts/prepare_mopd_mix.py --out $TRAIN_DATASET" >&2
+
+if [[ "$MIX_DIR" == *.parquet ]]; then
+    echo "[mopd] MIX_DIR/MIX_PARQUET must be a shard directory, not a single parquet: $MIX_DIR" >&2
+    echo "[mopd] run: python scripts/prepare_mopd_mix.py --out ${MIX_DIR%.parquet}" >&2
     exit 1
 fi
+if [ ! -d "$MIX_DIR" ]; then
+    echo "[mopd] missing train shard dir: $MIX_DIR" >&2
+    echo "[mopd] run: python scripts/prepare_mopd_mix.py --out $MIX_DIR" >&2
+    exit 1
+fi
+shopt -s nullglob
+TRAIN_SHARDS=()
+[ -f "$MIX_DIR/math.parquet" ] && TRAIN_SHARDS+=("$MIX_DIR/math.parquet")
+TRAIN_SHARDS+=("$MIX_DIR"/code_*.parquet)
+shopt -u nullglob
+if [ "${#TRAIN_SHARDS[@]}" -eq 0 ]; then
+    echo "[mopd] no math.parquet / code_*.parquet under $MIX_DIR" >&2
+    echo "[mopd] run: python scripts/prepare_mopd_mix.py --out $MIX_DIR" >&2
+    exit 1
+fi
+TRAIN_DATASET="["
+for _shard in "${TRAIN_SHARDS[@]}"; do
+    TRAIN_DATASET+="'${_shard}',"
+done
+TRAIN_DATASET="${TRAIN_DATASET%,}]"
+export TRAIN_DATASET
+
 if [ ! -f "$TEST_DATASET" ]; then
     echo "[mopd] missing val parquet: $TEST_DATASET" >&2
     echo "[mopd] run: python scripts/prepare_mopd_val_mix.py --out $TEST_DATASET" >&2
