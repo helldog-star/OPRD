@@ -37,6 +37,18 @@ RepProjectorMode = Literal["full", "low_rank", "low_rank_residual"]
 VALID_REP_PROJECTOR_MODES = ("full", "low_rank", "low_rank_residual")
 
 
+def cast_repr_storage_dtype(tensor: Tensor) -> Tensor:
+    """Store teacher/student hidden states in bf16 (avoid fp32 copies)."""
+    if tensor.is_floating_point() and tensor.dtype != torch.bfloat16:
+        return tensor.to(dtype=torch.bfloat16)
+    return tensor
+
+
+def detach_repr_to_cpu_bf16(tensor: Tensor) -> Tensor:
+    """Detach a hidden/attn tensor for host-side mini-batch cache."""
+    return cast_repr_storage_dtype(tensor.detach()).cpu()
+
+
 def validate_rep_distillation_layers(layers: str) -> str:
     if layers not in VALID_REP_DISTILLATION_LAYERS:
         raise ValueError(
@@ -465,7 +477,9 @@ def extract_teacher_response_hidden_repr(
     else:
         layer_indices = get_rep_distillation_hidden_state_indices(len(hidden_states), layers)
         layer_reprs = [
-            _extract_single_layer_response_repr(hidden_states[idx].float(), response_mask, positions)
+            _extract_single_layer_response_repr(
+                cast_repr_storage_dtype(hidden_states[idx]), response_mask, positions
+            )
             for idx in layer_indices
         ]
         repr = stack_layer_response_reprs(layer_reprs)
@@ -641,7 +655,7 @@ def hidden_states_tuple_to_response_repr(
                 seqlen=seqlen,
             )
         layer_reprs.append(
-            _extract_single_layer_response_repr(layer_hidden.float(), response_mask, positions)
+            _extract_single_layer_response_repr(cast_repr_storage_dtype(layer_hidden), response_mask, positions)
         )
     repr = stack_layer_response_reprs(layer_reprs)
     if compact and positions in ("first_k", "last_k"):

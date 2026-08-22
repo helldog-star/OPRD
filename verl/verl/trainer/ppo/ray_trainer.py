@@ -630,6 +630,60 @@ class RayPPOTrainer:
             )
         return self._merge_routed_teacher_data(len(batch), parts)
 
+    def _update_actor_stream_teacher_repr(self, batch: DataProto) -> tuple[DataProto, dict, dict]:
+        """Score teacher hidden/attn per PPO mini-batch, update actor, then drop the tensors.
+
+        Avoids materializing full-step ``teacher_last_hidden_repr`` (can be hundreds of GB in fp32).
+        """
+        mini_size = int(self.config.actor_rollout_ref.actor.ppo_mini_batch_size)
+        if mini_size <= 0:
+            raise ValueError(f"ppo_mini_batch_size must be positive, got {mini_size}")
+
+        minis = batch.split(mini_size)
+        merged_metrics: dict[str, list] = defaultdict(list)
+        rep_metric_acc: dict[str, list] = defaultdict(list)
+        att_metric_acc: dict[str, list] = defaultdict(list)
+        heavy_keys = ("teacher_last_hidden_repr", "teacher_attn_rows")
+
+        for mini_idx, mini in enumerate(minis):
+            # split() shares meta_info with the parent batch; copy so per-mini flags
+            # (token counts, lr skip) do not clobber the full-step metadata.
+            mini.meta_info = dict(mini.meta_info)
+            mini.meta_info["extract_teacher_hidden"] = bool(
+                self.config.actor_rollout_ref.actor.get("use_rep_distillation", False)
+            )
+            mini.meta_info["extract_teacher_attn"] = bool(
+                self.config.actor_rollout_ref.actor.get("use_att_distillation", False)
+            )
+            mini.meta_info["skip_actor_lr_scheduler"] = mini_idx < len(minis) - 1
+            mini.meta_info["global_token_num"] = torch.sum(mini.batch["attention_mask"], dim=-1).tolist()
+
+            teacher_data = self._compute_rm_score(mini)
+            mini = mini.union(teacher_data)
+            del teacher_data
+
+            actor_output = self.actor_rollout_wg.update_actor(mini)
+            reduced = reduce_metrics(actor_output.meta_info["metrics"])
+            for key, value in reduced.items():
+                merged_metrics[key].append(value)
+
+            if "teacher_last_hidden_repr" in mini.batch.keys():
+                for key, value in compute_rep_distillation_metrics(mini).items():
+                    rep_metric_acc[key].append(value)
+            if "teacher_attn_rows" in mini.batch.keys():
+                for key, value in compute_att_distillation_metrics(mini).items():
+                    att_metric_acc[key].append(value)
+
+            for key in heavy_keys:
+                if key in mini.batch.keys():
+                    mini.batch.pop(key)
+            del mini
+
+        def _mean_acc(acc: dict[str, list]) -> dict:
+            return {key: (sum(vals) / len(vals) if vals else 0.0) for key, vals in acc.items()}
+
+        return DataProto(meta_info={"metrics": merged_metrics}), _mean_acc(rep_metric_acc), _mean_acc(att_metric_acc)
+
     def _validate(self):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
@@ -1314,9 +1368,20 @@ class RayPPOTrainer:
                                     old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
                                     batch = batch.union(old_log_prob)
 
-                            with marked_timer("compute_rm_score", timing_raw, color="magenta"):
-                                teacher_data = self._compute_rm_score(batch)
-                                batch = batch.union(teacher_data)
+                            # Rep/attn hidden states are scored per PPO mini-batch during
+                            # actor update (bf16, discarded after the step). Skip the full-step
+                            # materialization here; logits-only fields can still be computed now.
+                            if not rep_distillation_only:
+                                with marked_timer("compute_rm_score", timing_raw, color="magenta"):
+                                    if use_rep_distillation:
+                                        batch.meta_info["extract_teacher_hidden"] = False
+                                    if use_att_distillation:
+                                        batch.meta_info["extract_teacher_attn"] = False
+                                    teacher_data = self._compute_rm_score(batch)
+                                    batch = batch.union(teacher_data)
+                                    for _heavy_key in ("teacher_last_hidden_repr", "teacher_attn_rows"):
+                                        if _heavy_key in batch.batch.keys():
+                                            batch.batch.pop(_heavy_key)
 
                             if rep_distillation_only:
                                 zero_reward = torch.zeros_like(batch.batch["response_mask"], dtype=torch.float32)
@@ -2450,13 +2515,20 @@ class RayPPOTrainer:
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                            actor_output = self.actor_rollout_wg.update_actor(batch)
+                            streamed_rep_metrics: dict = {}
+                            streamed_att_metrics: dict = {}
+                            if use_rep_distillation or use_att_distillation:
+                                actor_output, streamed_rep_metrics, streamed_att_metrics = (
+                                    self._update_actor_stream_teacher_repr(batch)
+                                )
+                            else:
+                                actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
                         if use_rep_distillation:
-                            metrics.update(compute_rep_distillation_metrics(batch))
+                            metrics.update(streamed_rep_metrics or compute_rep_distillation_metrics(batch))
                         if use_att_distillation:
-                            metrics.update(compute_att_distillation_metrics(batch))
+                            metrics.update(streamed_att_metrics or compute_att_distillation_metrics(batch))
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

@@ -893,7 +893,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
             lr = self.actor_lr_scheduler.get_last_lr()[0]
             metrics["actor/lr"] = lr.item() if torch.is_tensor(lr) else lr
-            self.actor_lr_scheduler.step()
+            if not data.meta_info.get("skip_actor_lr_scheduler", False):
+                self.actor_lr_scheduler.step()
 
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={"metrics": metrics})
@@ -2285,7 +2286,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
                             seqlen=seqlen,
                         )
                         teacher_last_hidden_repr = extract_teacher_response_hidden_repr(
-                            full_last_hidden.float(),
+                            full_last_hidden,
                             response_mask,
                             rep_distillation_positions,
                             "last",
@@ -2363,7 +2364,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
                     teacher_hidden = (
                         output.hidden_states
                         if rep_distillation_layers != "last"
-                        else output.hidden_states[-1].float()
+                        else output.hidden_states[-1]
                     )
                     teacher_last_hidden_repr = extract_teacher_response_hidden_repr(
                         teacher_hidden,
@@ -2703,11 +2704,13 @@ class RewardModelWorker(Worker, DistProfilerExtension):
         global_steps = data.meta_info.get("global_steps", -1)
         is_plot = data.meta_info.get("is_plot", False)
         use_rep_distillation = data.meta_info.get("use_rep_distillation", False)
+        extract_teacher_hidden = data.meta_info.get("extract_teacher_hidden", use_rep_distillation)
         rep_distillation_positions = data.meta_info.get("rep_distillation_positions", "last")
         rep_distillation_layers = data.meta_info.get("rep_distillation_layers", "last")
         rep_distillation_last_k = int(data.meta_info.get("rep_distillation_last_k", 32))
         rep_distillation_first_k = int(data.meta_info.get("rep_distillation_first_k", 50))
         use_att_distillation = data.meta_info.get("use_att_distillation", False)
+        extract_teacher_attn = data.meta_info.get("extract_teacher_attn", use_att_distillation)
         att_distillation_positions = data.meta_info.get("att_distillation_positions", "last")
         att_distillation_layers = data.meta_info.get("att_distillation_layers", "last")
         att_distillation_last_k = int(data.meta_info.get("att_distillation_last_k", 32))
@@ -2758,7 +2761,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
             teacher_temperature = data.meta_info.get("teacher_temperature", self.config.get("teacher_temperature", 1.0))
 
             att_batch_key_width = None
-            if use_att_distillation:
+            if extract_teacher_attn:
                 from verl.utils.att_distillation import (
                     get_att_distillation_batch_key_width,
                     pad_attn_rows_to_key_width,
@@ -2822,7 +2825,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
                     top_k=top_k,
                     strategy=top_k_strategy,
                     teacher_temperature=teacher_temperature,
-                    return_last_hidden_repr=use_rep_distillation,
+                    return_last_hidden_repr=extract_teacher_hidden,
                     rep_distillation_positions=rep_distillation_positions,
                     rep_distillation_layers=rep_distillation_layers,
                     rep_distillation_last_k=rep_distillation_last_k,
@@ -2843,19 +2846,25 @@ class RewardModelWorker(Worker, DistProfilerExtension):
                     output_overlap_counts.append(teacher_overlap_mask_batch)
                 if teacher_in_student_mask_batch is not None:
                     output_teacher_in_student.append(teacher_in_student_mask_batch)
-                if use_rep_distillation:
+                if extract_teacher_hidden:
                     if teacher_last_hidden_repr_batch is None:
                         raise RuntimeError(
-                            "teacher_last_hidden_repr is None while use_rep_distillation=True"
+                            "teacher_last_hidden_repr is None while extract_teacher_hidden=True"
                         )
+                    from verl.utils.rep_distillation import detach_repr_to_cpu_bf16
+
                     output_teacher_last_hidden_repr.append(
-                        teacher_last_hidden_repr_batch.detach().float().cpu()
+                        detach_repr_to_cpu_bf16(teacher_last_hidden_repr_batch)
                     )
                 elif teacher_last_hidden_repr_batch is not None:
+                    from verl.utils.rep_distillation import detach_repr_to_cpu_bf16
+
                     output_teacher_last_hidden_repr.append(
-                        teacher_last_hidden_repr_batch.detach().float().cpu()
+                        detach_repr_to_cpu_bf16(teacher_last_hidden_repr_batch)
                     )
-                if use_att_distillation:
+                if extract_teacher_attn:
+                    from verl.utils.rep_distillation import detach_repr_to_cpu_bf16
+
                     teacher_attn_rows_batch = self._extract_teacher_attn_rows(
                         micro_batch,
                         att_distillation_positions=att_distillation_positions,
@@ -2867,7 +2876,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
                     teacher_attn_rows_batch = pad_attn_rows_to_key_width(
                         teacher_attn_rows_batch, att_batch_key_width
                     )
-                    output_teacher_attn_rows.append(teacher_attn_rows_batch.detach().float().cpu())
+                    output_teacher_attn_rows.append(detach_repr_to_cpu_bf16(teacher_attn_rows_batch))
 
             teacher_logp = torch.cat(output_logp, dim=0)
             teacher_on_student_logp = None

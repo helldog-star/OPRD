@@ -28,7 +28,8 @@ export RM_USE_DYNAMIC_BSZ=${RM_USE_DYNAMIC_BSZ:-True}
 export RM_MICRO_BATCH_SIZE_PER_GPU=${RM_MICRO_BATCH_SIZE_PER_GPU:-1}
 export ACTOR_USE_DYNAMIC_BSZ=${ACTOR_USE_DYNAMIC_BSZ:-True}
 export ACTOR_MICRO_BATCH_SIZE_PER_GPU=${ACTOR_MICRO_BATCH_SIZE_PER_GPU:-1}
-# Prefer no offload on 8xA100; enable if OOM.
+# Keep models on GPU. Teacher hidden is scored per ppo mini-batch (bf16) and dropped.
+# Offload + full-step fp32 hidden cache is what blew CPU RAM previously.
 export ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-False}
 export ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-False}
 
