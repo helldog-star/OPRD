@@ -70,7 +70,17 @@ class Tracking:
             if config and config["trainer"].get("wandb_proxy", None):
                 settings = wandb.Settings(https_proxy=config["trainer"]["wandb_proxy"])
             entity = os.environ.get("WANDB_ENTITY", None)
-            wandb.init(project=project_name, name=experiment_name, entity=entity, config=config, settings=settings)
+            wandb_group = os.environ.get("WANDB_RUN_GROUP") or None
+            wandb_tags = [t for t in os.environ.get("WANDB_TAGS", "").split(",") if t]
+            wandb.init(
+                project=project_name,
+                name=experiment_name,
+                entity=entity,
+                group=wandb_group,
+                tags=wandb_tags or None,
+                config=config,
+                settings=settings,
+            )
             self.logger["wandb"] = wandb
 
         if "trackio" in default_backend:

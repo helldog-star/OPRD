@@ -13,8 +13,10 @@ export USE_REP_DISTILLATION=True
 export REP_DISTILLATION_ONLY=True
 export LOG_PROB_TOP_K=0
 export ADV_ESTIMATOR=${ADV_ESTIMATOR:-token_reward_direct}
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-mopd_oprd_rep_$(date +%Y-%m-%d_%H-%M-%S)}
+# Leave EXPERIMENT_NAME unset so logits.sh prefixes the WandB run with mopd_oprd_*.
+# Two-stage / callers may still export EXPERIMENT_NAME explicitly.
 export MOPD_LOG_PREFIX=${MOPD_LOG_PREFIX:-mopd_oprd}
+export WANDB_TAGS=${WANDB_TAGS:-oprd}
 
 # Official OPRD rep defaults (override via env if needed)
 export REP_DISTILLATION_POSITIONS=${REP_DISTILLATION_POSITIONS:-last_k}

@@ -33,7 +33,10 @@
 | `MINI_BATCH_SIZE` | 128 | PPO mini-batch |
 | `N_RESPONSES` | **1** | MOPD / G-OPD distill 均用 `n=1` |
 | `ACTOR_LR` | `1e-5` | |
-| `TOTAL_TRAINING_STEPS` | 200 | 可按机器时间改为 50–500；G-OPD same-size 曾用 50 |
+| `TOTAL_TRAINING_STEPS` | **50** | 到步数即停（`is_last_step` 会存最后一份 ckpt）；对齐 G-OPD same-size |
+| `TOTAL_EPOCHS` | 2 | balanced mix ≈50.5k，`batch=1024` 一轮只有 49 step；第 2 轮只用来补满第 50 step |
+| `TEST_FREQ` | **5** | 每 5 step 验证（含 step 50） |
+| `SAVE_FREQ` | **20** | 每 20 step 存盘；step 50 因 last-step 再存一次 → ckpt 20/40/50 |
 | Thinking | `enable_thinking=False` | Non-Thinking 模型必须关闭 |
 
 Teacher 自身 RL 训练长度（G-OPD 附录，供对照）：Math GRPO **16384** / Code GRPO **8192**；步数 Step1200 比 Step500/300 训得更久。
@@ -134,9 +137,9 @@ python scripts/prepare_mopd_val_mix.py
 unset ALL_PROXY all_proxy HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export RAY_PORT=6399
-export TOTAL_TRAINING_STEPS=200
-export TEST_FREQ=20
-export SAVE_FREQ=50
+export TOTAL_TRAINING_STEPS=50
+export TEST_FREQ=5
+export SAVE_FREQ=20
 export EXPERIMENT_NAME=mopd_logits_$(date +%Y-%m-%d_%H-%M-%S)
 
 # 可选覆盖

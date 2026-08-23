@@ -60,13 +60,17 @@ export N_RESPONSES=${N_RESPONSES:-1}                 # MOPD / G-OPD distill use 
 export GPU_MEM_UTIL=${GPU_MEM_UTIL:-0.55}
 export RAY_NUM_CPUS=${RAY_NUM_CPUS:-64}
 export RAY_OBJECT_STORE_MEMORY=${RAY_OBJECT_STORE_MEMORY:-80000000000}
-export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-200}
+# Balanced mix is ~50.5k (code-limited) → 49 steps/epoch at batch=1024.
+# Epoch 2 wraps ~1 already-seen batch so TOTAL_TRAINING_STEPS=50 is reachable;
+# training still stops on the step cap (is_last_step saves the final ckpt).
+export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-50}
+export TOTAL_EPOCHS=${TOTAL_EPOCHS:-2}
 
 export MAX_MODEL_LEN=$(( MAX_RESP_LENGTH + MAX_PROMPT_LENGTH > MAX_VAL_RESP_LENGTH + MAX_PROMPT_LENGTH ? MAX_RESP_LENGTH + MAX_PROMPT_LENGTH : MAX_VAL_RESP_LENGTH + MAX_PROMPT_LENGTH ))
 export TEMPERATURE=${TEMPERATURE:-1.0}
 export TEACHER_TEMPERATURE=${TEACHER_TEMPERATURE:-1.0}
-export SAVE_FREQ=${SAVE_FREQ:-50}
-export TEST_FREQ=${TEST_FREQ:-20}
+export SAVE_FREQ=${SAVE_FREQ:-20}
+export TEST_FREQ=${TEST_FREQ:-5}
 export VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-True}
 export ACTOR_LR=${ACTOR_LR:-1e-5}
 
@@ -141,6 +145,7 @@ if [ ! -f "$TEST_DATASET" ]; then
     exit 1
 fi
 echo "[mopd] n_gpus=$N_GPUS train_batch=$TRAIN_BATCH_SIZE n=$N_RESPONSES resp=$MAX_RESP_LENGTH"
+echo "[mopd] steps=$TOTAL_TRAINING_STEPS epochs=$TOTAL_EPOCHS test_freq=$TEST_FREQ save_freq=$SAVE_FREQ"
 echo "[mopd] train_files=$TRAIN_DATASET"
 echo "[mopd] val_files=$TEST_DATASET"
 echo "[mopd] student=$ACTOR_MODEL_PATH"
@@ -148,7 +153,20 @@ echo "[mopd] math_teacher=$MATH_TEACHER_PATH"
 echo "[mopd] code_teacher=$CODE_TEACHER_PATH"
 
 export ACTOR_MODEL_NAME=$(basename "$ACTOR_MODEL_PATH")
-export EXPERIMENT_NAME=${EXPERIMENT_NAME:-mopd_logits_${TRAIN_DATASET_NAME}_${ACTOR_MODEL_NAME}_n${N_RESPONSES}_b${TRAIN_BATCH_SIZE}_r${MAX_RESP_LENGTH}_$(date +%Y-%m-%d_%H-%M-%S)}
+# WandB run name = EXPERIMENT_NAME. Prefix by method so logits / OPRD / two-stage
+# do not collapse into mopd_logits_* when someone forgets to set the name.
+if [ -z "${EXPERIMENT_NAME:-}" ]; then
+    if [ "${USE_REP_DISTILLATION}" = "True" ] && [ "${REP_DISTILLATION_ONLY}" = "True" ]; then
+        MOPD_METHOD_TAG=oprd
+    elif [ "${USE_REP_DISTILLATION}" = "True" ]; then
+        MOPD_METHOD_TAG=rep_and_logits
+    else
+        MOPD_METHOD_TAG=logits
+    fi
+    export EXPERIMENT_NAME="mopd_${MOPD_METHOD_TAG}_${TRAIN_DATASET_NAME}_${ACTOR_MODEL_NAME}_n${N_RESPONSES}_b${TRAIN_BATCH_SIZE}_r${MAX_RESP_LENGTH}_$(date +%Y-%m-%d_%H-%M-%S)"
+fi
+export WANDB_TAGS=${WANDB_TAGS:-$MOPD_METHOD_TAG}
+echo "[mopd] wandb project=$PROJECT_NAME name=$EXPERIMENT_NAME group=${WANDB_RUN_GROUP:-} tags=$WANDB_TAGS"
 export CKPT_PATH=${PROJECT_PATH}/${EXPERIMENT_NAME}
 
 export PYTHONUNBUFFERED=1
@@ -175,9 +193,20 @@ sleep 3
 
 PPO_MAX_TOKEN_LEN_PER_GPU=$(( ((MAX_PROMPT_LENGTH + MAX_RESP_LENGTH) > 32768) ? (MAX_PROMPT_LENGTH + MAX_RESP_LENGTH) : 32768 ))
 
+HYDRA_EXTRA=()
+if [ -n "${RESUME_FROM_PATH:-}" ]; then
+    HYDRA_EXTRA+=(trainer.resume_mode=resume_path)
+    HYDRA_EXTRA+=(trainer.resume_from_path="$RESUME_FROM_PATH")
+    echo "[mopd] resume_from_path=$RESUME_FROM_PATH load_contents=${CKPT_LOAD_CONTENTS:-[default]}"
+fi
+if [ -n "${CKPT_LOAD_CONTENTS:-}" ]; then
+    HYDRA_EXTRA+=("actor_rollout_ref.actor.checkpoint.load_contents=${CKPT_LOAD_CONTENTS}")
+fi
+
 python -m verl.trainer.main_ppo \
     algorithm.adv_estimator=$ADV_ESTIMATOR \
     data.shuffle=True \
+    data.seed=${DATA_SEED:-42} \
     data.train_files="$TRAIN_DATASET" \
     data.val_files="$TEST_DATASET" \
     data.train_batch_size=$TRAIN_BATCH_SIZE \
@@ -247,6 +276,7 @@ python -m verl.trainer.main_ppo \
     trainer.save_freq=$SAVE_FREQ \
     trainer.test_freq=$TEST_FREQ \
     trainer.total_training_steps=$TOTAL_TRAINING_STEPS \
-    trainer.total_epochs=1 \
+    trainer.total_epochs=$TOTAL_EPOCHS \
     trainer.default_local_dir="$CKPT_PATH" \
-    trainer.validation_data_dir=${PROJECT_PATH}/logs/validation_log/$EXPERIMENT_NAME
+    trainer.validation_data_dir=${PROJECT_PATH}/logs/validation_log/$EXPERIMENT_NAME \
+    "${HYDRA_EXTRA[@]}"
