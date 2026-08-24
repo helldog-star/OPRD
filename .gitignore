@@ -139,4 +139,10 @@ figs/
 LlamaFactory/data/
 TRL-sft/swanlog/
 verl/validation_log/
-datasets/*
+datasets/
+checkpoint/
+outputs/
+*.pt
+*.bin
+*.safetensors
+*.log
