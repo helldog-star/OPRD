@@ -10,9 +10,13 @@
 #
 #   bash mopd_multi_teacher_rep_then_logits.sh
 #   STAGE=1  bash mopd_multi_teacher_rep_then_logits.sh
-#   STAGE=2  STAGE1_NAME=... STAGE1_CKPT_STEP=30 bash ...
+#   STAGE=2  STAGE1_NAME=... bash ...
 #   DRY_RUN=1 bash mopd_multi_teacher_rep_then_logits.sh   # print plan, do not train
-set -eo pipefail
+#
+# Training hparams below are pinned (not ${VAR:-default}) so a leftover
+# TEST_FREQ/SAVE_FREQ in the parent shell cannot override this recipe.
+# STAGE / DRY_RUN / RUN_TAG / STAGE{1,2}_NAME remain overridable.
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -42,17 +46,24 @@ export STAGE1_NAME=${STAGE1_NAME:-mopd_rep_then_logits_s1_${RUN_TAG}}
 export STAGE2_NAME=${STAGE2_NAME:-mopd_rep_then_logits_s2_${RUN_TAG}}
 export WANDB_RUN_GROUP=${WANDB_RUN_GROUP:-mopd_rep_then_logits_${RUN_TAG}}
 
-STAGE1_STEPS=${STAGE1_STEPS:-30}
-STAGE2_STEPS=${STAGE2_STEPS:-20}
-STAGE1_CKPT_STEP=${STAGE1_CKPT_STEP:-$STAGE1_STEPS}
-STAGE2_END_STEP=${STAGE2_END_STEP:-$((STAGE1_CKPT_STEP + STAGE2_STEPS))}
-STAGE1_SAVE_FREQ=${STAGE1_SAVE_FREQ:-10}
-STAGE2_SAVE_FREQ=${STAGE2_SAVE_FREQ:-10}
-TEST_FREQ=${TEST_FREQ:-5}
-STAGE2_ACTOR_LR=${STAGE2_ACTOR_LR:-5e-6}
+# Pinned recipe (direct assignment; ignores inherited env).
+STAGE1_STEPS=30
+STAGE2_STEPS=20
+STAGE1_CKPT_STEP=$STAGE1_STEPS
+STAGE2_END_STEP=$((STAGE1_CKPT_STEP + STAGE2_STEPS))
+STAGE1_SAVE_FREQ=10
+STAGE2_SAVE_FREQ=10
+TEST_FREQ=5
+TOTAL_EPOCHS=2
+VAL_BEFORE_TRAIN=True
+DATA_SEED=42
+STAGE1_ACTOR_LR=1e-5
+STAGE2_ACTOR_LR=5e-6
+STAGE2_GPU_MEM_UTIL=0.55
 
 STAGE1_CKPT_DIR="${PROJECT_PATH}/${STAGE1_NAME}"
 RESUME_DIR="${STAGE1_CKPT_DIR}/global_step_${STAGE1_CKPT_STEP}"
+STAGE2_CKPT_DIR="${PROJECT_PATH}/${STAGE2_NAME}/global_step_${STAGE2_END_STEP}"
 MANIFEST="${PROJECT_PATH}/${STAGE1_NAME}/rep_then_logits_manifest.txt"
 
 if [ -z "${SLURM_JOB_ID:-}" ]; then
@@ -81,29 +92,52 @@ EOF
     echo "[rep2logits] wrote $MANIFEST"
 }
 
+# Trainer / Ray / Python 3.12 multiprocess often exit non-zero during
+# shutdown after the last checkpoint is already on disk. Continue if the
+# expected actor + data.pt are present; fail if they are not.
+_run_stage_and_tolerate_shutdown() {
+    local stage_name="$1"
+    local ckpt_dir="$2"
+    shift 2
+    local rc=0
+    "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "[rep2logits] ${stage_name} trainer exited 0"
+        return 0
+    fi
+    if [ -d "${ckpt_dir}/actor" ] && [ -f "${ckpt_dir}/data.pt" ]; then
+        echo "[rep2logits] ${stage_name} exited ${rc} after writing ${ckpt_dir}; treating as shutdown noise"
+        return 0
+    fi
+    echo "[rep2logits] ${stage_name} failed with exit ${rc} and missing actor/data.pt under ${ckpt_dir}" >&2
+    ls -la "$ckpt_dir" 2>/dev/null || echo "  (missing $ckpt_dir)" >&2
+    exit "$rc"
+}
+
 run_stage1() {
     echo "[rep2logits] ===== stage1 OPRD rep-only: steps=$STAGE1_STEPS save=$STAGE1_SAVE_FREQ test=$TEST_FREQ ====="
     echo "[rep2logits] wandb name=$STAGE1_NAME group=$WANDB_RUN_GROUP"
     if [ "$DRY_RUN" = "1" ]; then
         echo "[rep2logits] DRY_RUN skip stage1 launch"
-        echo "[rep2logits]   EXPERIMENT_NAME=$STAGE1_NAME TOTAL_TRAINING_STEPS=$STAGE1_STEPS ACTOR_LR=${STAGE1_ACTOR_LR:-1e-5}"
+        echo "[rep2logits]   EXPERIMENT_NAME=$STAGE1_NAME TOTAL_TRAINING_STEPS=$STAGE1_STEPS ACTOR_LR=$STAGE1_ACTOR_LR"
         echo "[rep2logits]   USE_REP_DISTILLATION=True REP_DISTILLATION_ONLY=True (via oprd.sh)"
-        echo "[rep2logits]   DATA_SEED=${DATA_SEED:-42} SAVE_FREQ=$STAGE1_SAVE_FREQ TEST_FREQ=$TEST_FREQ"
+        echo "[rep2logits]   DATA_SEED=$DATA_SEED SAVE_FREQ=$STAGE1_SAVE_FREQ TEST_FREQ=$TEST_FREQ"
         return 0
     fi
-    env \
-        EXPERIMENT_NAME="$STAGE1_NAME" \
-        MOPD_LOG_PREFIX="mopd_rep_then_logits_s1" \
-        WANDB_RUN_GROUP="$WANDB_RUN_GROUP" \
-        WANDB_TAGS="rep_then_logits,stage1,oprd" \
-        TOTAL_TRAINING_STEPS="$STAGE1_STEPS" \
-        TOTAL_EPOCHS="${TOTAL_EPOCHS:-2}" \
-        SAVE_FREQ="$STAGE1_SAVE_FREQ" \
-        TEST_FREQ="$TEST_FREQ" \
-        VAL_BEFORE_TRAIN="${VAL_BEFORE_TRAIN:-True}" \
-        ACTOR_LR="${STAGE1_ACTOR_LR:-1e-5}" \
-        DATA_SEED="${DATA_SEED:-42}" \
-        bash "$SCRIPT_DIR/mopd_multi_teacher_oprd.sh"
+    _run_stage_and_tolerate_shutdown "stage1" "$RESUME_DIR" \
+        env \
+            EXPERIMENT_NAME="$STAGE1_NAME" \
+            MOPD_LOG_PREFIX="mopd_rep_then_logits_s1" \
+            WANDB_RUN_GROUP="$WANDB_RUN_GROUP" \
+            WANDB_TAGS="rep_then_logits,stage1,oprd" \
+            TOTAL_TRAINING_STEPS="$STAGE1_STEPS" \
+            TOTAL_EPOCHS="$TOTAL_EPOCHS" \
+            SAVE_FREQ="$STAGE1_SAVE_FREQ" \
+            TEST_FREQ="$TEST_FREQ" \
+            VAL_BEFORE_TRAIN="$VAL_BEFORE_TRAIN" \
+            ACTOR_LR="$STAGE1_ACTOR_LR" \
+            DATA_SEED="$DATA_SEED" \
+            bash "$SCRIPT_DIR/mopd_multi_teacher_oprd.sh"
     echo "[rep2logits] stage1 done. ckpt dir=$STAGE1_CKPT_DIR"
 }
 
@@ -132,26 +166,27 @@ run_stage2() {
         echo "[rep2logits] DRY_RUN skip stage2 launch"
         return 0
     fi
-    env -u USE_REP_DISTILLATION -u REP_DISTILLATION_ONLY -u EXPERIMENT_NAME -u MOPD_LOG_PREFIX \
-        -u TOTAL_TRAINING_STEPS -u SAVE_FREQ -u ACTOR_LR -u GPU_MEM_UTIL \
-        -u RESUME_FROM_PATH -u CKPT_LOAD_CONTENTS \
-        EXPERIMENT_NAME="$STAGE2_NAME" \
-        MOPD_LOG_PREFIX="mopd_rep_then_logits_s2" \
-        WANDB_RUN_GROUP="$WANDB_RUN_GROUP" \
-        WANDB_TAGS="rep_then_logits,stage2,logits" \
-        USE_REP_DISTILLATION=False \
-        REP_DISTILLATION_ONLY=False \
-        RESUME_FROM_PATH="$resume_abs" \
-        CKPT_LOAD_CONTENTS="['model']" \
-        TOTAL_TRAINING_STEPS="$STAGE2_END_STEP" \
-        TOTAL_EPOCHS="${TOTAL_EPOCHS:-2}" \
-        SAVE_FREQ="$STAGE2_SAVE_FREQ" \
-        TEST_FREQ="$TEST_FREQ" \
-        VAL_BEFORE_TRAIN=True \
-        ACTOR_LR="$STAGE2_ACTOR_LR" \
-        DATA_SEED="${DATA_SEED:-42}" \
-        GPU_MEM_UTIL="${STAGE2_GPU_MEM_UTIL:-0.55}" \
-        bash "$SCRIPT_DIR/mopd_multi_teacher_logits.sh"
+    _run_stage_and_tolerate_shutdown "stage2" "$STAGE2_CKPT_DIR" \
+        env -u USE_REP_DISTILLATION -u REP_DISTILLATION_ONLY -u EXPERIMENT_NAME -u MOPD_LOG_PREFIX \
+            -u TOTAL_TRAINING_STEPS -u SAVE_FREQ -u ACTOR_LR -u GPU_MEM_UTIL \
+            -u RESUME_FROM_PATH -u CKPT_LOAD_CONTENTS \
+            EXPERIMENT_NAME="$STAGE2_NAME" \
+            MOPD_LOG_PREFIX="mopd_rep_then_logits_s2" \
+            WANDB_RUN_GROUP="$WANDB_RUN_GROUP" \
+            WANDB_TAGS="rep_then_logits,stage2,logits" \
+            USE_REP_DISTILLATION=False \
+            REP_DISTILLATION_ONLY=False \
+            RESUME_FROM_PATH="$resume_abs" \
+            CKPT_LOAD_CONTENTS="['model']" \
+            TOTAL_TRAINING_STEPS="$STAGE2_END_STEP" \
+            TOTAL_EPOCHS="$TOTAL_EPOCHS" \
+            SAVE_FREQ="$STAGE2_SAVE_FREQ" \
+            TEST_FREQ="$TEST_FREQ" \
+            VAL_BEFORE_TRAIN="$VAL_BEFORE_TRAIN" \
+            ACTOR_LR="$STAGE2_ACTOR_LR" \
+            DATA_SEED="$DATA_SEED" \
+            GPU_MEM_UTIL="$STAGE2_GPU_MEM_UTIL" \
+            bash "$SCRIPT_DIR/mopd_multi_teacher_logits.sh"
     echo "[rep2logits] stage2 done. ckpt dir=${PROJECT_PATH}/${STAGE2_NAME}"
 }
 
