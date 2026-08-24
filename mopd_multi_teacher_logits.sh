@@ -16,15 +16,15 @@ set -x
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# --- host runtime ---
-export OPRD_CONDA_SH=${OPRD_CONDA_SH:-/root/siton-tmp/home/liuxinyu/miniconda3/etc/profile.d/conda.sh}
-export OPRD_CONDA_ENV=${OPRD_CONDA_ENV:-verl}
-export OPRD_CONDA_BIN=${OPRD_CONDA_BIN:-/root/siton-tmp/home/liuxinyu/miniconda3/envs/verl/bin}
-# shellcheck disable=SC1090
-source "$OPRD_CONDA_SH"
-conda activate "$OPRD_CONDA_ENV"
-export PATH="$OPRD_CONDA_BIN:$PATH"
-export PYTHONPATH="${SCRIPT_DIR}/verl:${PYTHONPATH:-}"
+# # --- host runtime ---
+# export OPRD_CONDA_SH=${OPRD_CONDA_SH:-/root/siton-tmp/home/liuxinyu/miniconda3/etc/profile.d/conda.sh}
+# export OPRD_CONDA_ENV=${OPRD_CONDA_ENV:-verl}
+# export OPRD_CONDA_BIN=${OPRD_CONDA_BIN:-/root/siton-tmp/home/liuxinyu/miniconda3/envs/verl/bin}
+# # shellcheck disable=SC1090
+# source "$OPRD_CONDA_SH"
+# conda activate "$OPRD_CONDA_ENV"
+# export PATH="$OPRD_CONDA_BIN:$PATH"
+# export PYTHONPATH="${SCRIPT_DIR}/verl:${PYTHONPATH:-}"
 
 # Clear proxies for Ray (socks ALL_PROXY / Docker IP hangs are common on siton hosts).
 export NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,0.0.0.0,::1,172.17.0.4,172.17.0.0/16}
@@ -34,7 +34,8 @@ export HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= ALL_PROXY= all_proxy=
 
 export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
 export TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-0}
-export WANDB_MODE=${WANDB_MODE:-offline}
+export WANDB_MODE=${WANDB_MODE:-online}
+export WANDB_API_KEY="${WANDB_API_KEY:-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}"
 
 export MODEL_DIR=${MODEL_DIR:-/root/siton-tmp/home/liuxinyu/hf_models}
 export PROJECT_PATH=${PROJECT_PATH:-./outputs}
@@ -240,6 +241,8 @@ python -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.temperature=$TEMPERATURE \
     actor_rollout_ref.rollout.gpu_memory_utilization=$GPU_MEM_UTIL \
     actor_rollout_ref.rollout.max_model_len=$MAX_MODEL_LEN \
+    actor_rollout_ref.rollout.enable_chunked_prefill=True \
+    actor_rollout_ref.rollout.max_num_batched_tokens=$MAX_MODEL_LEN \
     actor_rollout_ref.rollout.n=$N_RESPONSES \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=$ACTOR_USE_DYNAMIC_BSZ \
