@@ -8,27 +8,36 @@
 # Stage2 does not load optimizer / lr_scheduler (checkpoint load_contents=['model']).
 # Prompts continue the same shuffled stream as stage1.
 #
+# Default (the stage-1 run for run_tag 2026-08-23_11-57-02 already exists) is to
+# RESUME stage2 (logits OPD) from its global_step_30 checkpoint — actor weights
+# + data.pt + global_step, fresh optimizer, x-axis 30 -> 50:
 #   bash mopd_multi_teacher_rep_then_logits.sh
+#
+# Fresh full two-stage run (brand-new stage1): set STAGE=all and a new
+# STAGE1_NAME / RUN_TAG so it does not reuse the existing s1 dir:
+#   STAGE=all STAGE1_NAME=mopd_rep_then_logits_s1_<newtag> RUN_TAG=<newtag> \
+#     bash mopd_multi_teacher_rep_then_logits.sh
+#
 #   STAGE=1  bash mopd_multi_teacher_rep_then_logits.sh
 #   STAGE=2  STAGE1_NAME=... bash ...
 #   DRY_RUN=1 bash mopd_multi_teacher_rep_then_logits.sh   # print plan, do not train
 #
 # Training hparams below are pinned (not ${VAR:-default}) so a leftover
 # TEST_FREQ/SAVE_FREQ in the parent shell cannot override this recipe.
-# STAGE / DRY_RUN / RUN_TAG / STAGE{1,2}_NAME remain overridable.
+# STAGE / DRY_RUN / RUN_TAG / STAGE{1,2}_NAME / WANDB_RUN_GROUP remain overridable.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-export OPRD_CONDA_SH=${OPRD_CONDA_SH:-/root/siton-tmp/home/liuxinyu/miniconda3/etc/profile.d/conda.sh}
-export OPRD_CONDA_ENV=${OPRD_CONDA_ENV:-verl}
-export OPRD_CONDA_BIN=${OPRD_CONDA_BIN:-/root/siton-tmp/home/liuxinyu/miniconda3/envs/verl/bin}
-# shellcheck disable=SC1090
-source "$OPRD_CONDA_SH"
-conda activate "$OPRD_CONDA_ENV"
-export PATH="$OPRD_CONDA_BIN:$PATH"
-export PYTHONPATH="${SCRIPT_DIR}/verl:${PYTHONPATH:-}"
+# export OPRD_CONDA_SH=${OPRD_CONDA_SH:-/root/siton-tmp/home/liuxinyu/miniconda3/etc/profile.d/conda.sh}
+# export OPRD_CONDA_ENV=${OPRD_CONDA_ENV:-verl}
+# export OPRD_CONDA_BIN=${OPRD_CONDA_BIN:-/root/siton-tmp/home/liuxinyu/miniconda3/envs/verl/bin}
+# # shellcheck disable=SC1090
+# source "$OPRD_CONDA_SH"
+# conda activate "$OPRD_CONDA_ENV"
+# export PATH="$OPRD_CONDA_BIN:$PATH"
+# export PYTHONPATH="${SCRIPT_DIR}/verl:${PYTHONPATH:-}"
 
 export NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,0.0.0.0,::1,172.17.0.4,172.17.0.0/16}
 export no_proxy="$NO_PROXY"
@@ -39,12 +48,12 @@ export PROJECT_PATH=${PROJECT_PATH:-./outputs}
 export PROJECT_NAME=${PROJECT_NAME:-MOPD_MultiTeacher}
 export RAY_PORT=${RAY_PORT:-6399}
 
-STAGE=${STAGE:-all}   # all | 1 | 2
+STAGE=${STAGE:-2}   # all | 1 | 2  (default 2: resume stage2 from STAGE1_NAME)
 DRY_RUN=${DRY_RUN:-0}
 RUN_TAG=${RUN_TAG:-$(date +%Y-%m-%d_%H-%M-%S)}
-export STAGE1_NAME=${STAGE1_NAME:-mopd_rep_then_logits_s1_${RUN_TAG}}
+export STAGE1_NAME=${STAGE1_NAME:-mopd_rep_then_logits_s1_2026-08-23_11-57-02}
 export STAGE2_NAME=${STAGE2_NAME:-mopd_rep_then_logits_s2_${RUN_TAG}}
-export WANDB_RUN_GROUP=${WANDB_RUN_GROUP:-mopd_rep_then_logits_${RUN_TAG}}
+export WANDB_RUN_GROUP=${WANDB_RUN_GROUP:-mopd_rep_then_logits_2026-08-23_11-57-02}
 
 # Pinned recipe (direct assignment; ignores inherited env).
 STAGE1_STEPS=30
@@ -213,3 +222,5 @@ esac
 
 echo "[rep2logits] finished STAGE=$STAGE"
 echo "[rep2logits] manifest=$MANIFEST"
+
+# nohup bash mopd_multi_teacher_rep_then_logits.sh > mopd_multi_teacher_rep_then_logits.log 2>&1 &
