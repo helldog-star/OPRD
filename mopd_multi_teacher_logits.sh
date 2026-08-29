@@ -24,7 +24,7 @@ cd "$SCRIPT_DIR"
 # source "$OPRD_CONDA_SH"
 # conda activate "$OPRD_CONDA_ENV"
 # export PATH="$OPRD_CONDA_BIN:$PATH"
-# export PYTHONPATH="${SCRIPT_DIR}/verl:${PYTHONPATH:-}"
+export PYTHONPATH="${SCRIPT_DIR}/verl:${PYTHONPATH:-}"
 
 # Clear proxies for Ray (socks ALL_PROXY / Docker IP hangs are common on siton hosts).
 export NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,0.0.0.0,::1,172.17.0.4,172.17.0.0/16}
@@ -153,20 +153,24 @@ echo "[mopd] math_teacher=$MATH_TEACHER_PATH"
 echo "[mopd] code_teacher=$CODE_TEACHER_PATH"
 
 export ACTOR_MODEL_NAME=$(basename "$ACTOR_MODEL_PATH")
+# Method tag is independent of EXPERIMENT_NAME: 1gpu wrappers often pre-set the
+# run name, but WANDB_TAGS still needs a non-empty default (wandb rejects "").
+if [ "${USE_REP_DISTILLATION}" = "True" ] && [ "${REP_DISTILLATION_ONLY}" = "True" ]; then
+    MOPD_METHOD_TAG=oprd
+elif [ "${USE_REP_DISTILLATION}" = "True" ]; then
+    MOPD_METHOD_TAG=rep_and_logits
+else
+    MOPD_METHOD_TAG=logits
+fi
 # WandB run name = EXPERIMENT_NAME. Prefix by method so logits / OPRD / two-stage
 # do not collapse into mopd_logits_* when someone forgets to set the name.
 if [ -z "${EXPERIMENT_NAME:-}" ]; then
-    if [ "${USE_REP_DISTILLATION}" = "True" ] && [ "${REP_DISTILLATION_ONLY}" = "True" ]; then
-        MOPD_METHOD_TAG=oprd
-    elif [ "${USE_REP_DISTILLATION}" = "True" ]; then
-        MOPD_METHOD_TAG=rep_and_logits
-    else
-        MOPD_METHOD_TAG=logits
-    fi
     export EXPERIMENT_NAME="mopd_${MOPD_METHOD_TAG}_${TRAIN_DATASET_NAME}_${ACTOR_MODEL_NAME}_n${N_RESPONSES}_b${TRAIN_BATCH_SIZE}_r${MAX_RESP_LENGTH}_$(date +%Y-%m-%d_%H-%M-%S)"
 fi
 export WANDB_TAGS=${WANDB_TAGS:-$MOPD_METHOD_TAG}
-echo "[mopd] wandb project=$PROJECT_NAME name=$EXPERIMENT_NAME group=${WANDB_RUN_GROUP:-} tags=$WANDB_TAGS"
+# Empty WANDB_TAGS becomes [''] in wandb env parsing and crashes init.
+[ -z "${WANDB_TAGS}" ] && unset WANDB_TAGS
+echo "[mopd] wandb project=$PROJECT_NAME name=$EXPERIMENT_NAME group=${WANDB_RUN_GROUP:-} tags=${WANDB_TAGS:-}"
 export CKPT_PATH=${PROJECT_PATH}/${EXPERIMENT_NAME}
 
 export PYTHONUNBUFFERED=1

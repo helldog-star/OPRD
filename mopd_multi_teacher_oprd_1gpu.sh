@@ -43,5 +43,8 @@ export ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-True}
 export MIX_DIR=${MIX_DIR:-$SCRIPT_DIR/datasets/mopd_math_code_mix_balanced}
 export TRAIN_DATASET_NAME=${TRAIN_DATASET_NAME:-mopd_math_code_mix_balanced}
 
+export CODE_TEACHER_PATH=/root/siton-tmp/home/liuxinyu/hf_models/Qwen3-4B-Non-Thinking-RL-Code-Step300
+export MATH_TEACHER_PATH=/root/siton-tmp/home/liuxinyu/hf_models/Qwen3-4B-Non-Thinking-RL-Math-Step500
+
 # Reuse 1gpu logits wrapper env + OPRD flags via main logits launcher.
 exec bash "$SCRIPT_DIR/mopd_multi_teacher_logits.sh" "$@"
