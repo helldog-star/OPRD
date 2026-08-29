@@ -61,10 +61,9 @@ export N_RESPONSES=${N_RESPONSES:-1}                 # MOPD / G-OPD distill use 
 export GPU_MEM_UTIL=${GPU_MEM_UTIL:-0.55}
 export RAY_NUM_CPUS=${RAY_NUM_CPUS:-64}
 export RAY_OBJECT_STORE_MEMORY=${RAY_OBJECT_STORE_MEMORY:-80000000000}
-# Balanced mix is ~50.5k (code-limited) → 49 steps/epoch at batch=1024.
-# Epoch 2 wraps ~1 already-seen batch so TOTAL_TRAINING_STEPS=50 is reachable;
-# training still stops on the step cap (is_last_step saves the final ckpt).
-export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-50}
+# Train for 51 optimizer steps by default; epoch 2 provides enough batches and
+# the explicit step cap remains the stopping condition.
+export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-51}
 export TOTAL_EPOCHS=${TOTAL_EPOCHS:-2}
 
 export MAX_MODEL_LEN=$(( MAX_RESP_LENGTH + MAX_PROMPT_LENGTH > MAX_VAL_RESP_LENGTH + MAX_PROMPT_LENGTH ? MAX_RESP_LENGTH + MAX_PROMPT_LENGTH : MAX_VAL_RESP_LENGTH + MAX_PROMPT_LENGTH ))
