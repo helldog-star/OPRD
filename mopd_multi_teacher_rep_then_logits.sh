@@ -3,14 +3,14 @@
 #
 #   Stage1: OPRD layers=all, last_k=2000, 30 steps, new run
 #   Stage2: resume actor weights + data.pt + global_steps, NEW optimizer,
-#           logits OPD for 20 more steps (WandB x-axis 30 → 50)
+#           logits OPD for 21 more steps (WandB x-axis 30 → 51)
 #
 # Stage2 does not load optimizer / lr_scheduler (checkpoint load_contents=['model']).
 # Prompts continue the same shuffled stream as stage1.
 #
 # Default (the stage-1 run for run_tag 2026-08-23_11-57-02 already exists) is to
 # RESUME stage2 (logits OPD) from its global_step_30 checkpoint — actor weights
-# + data.pt + global_step, fresh optimizer, x-axis 30 -> 50:
+# + data.pt + global_step, fresh optimizer, x-axis 30 -> 51:
 #   bash mopd_multi_teacher_rep_then_logits.sh
 #
 # Fresh full two-stage run (brand-new stage1): set STAGE=all and a new
@@ -57,7 +57,7 @@ export WANDB_RUN_GROUP=${WANDB_RUN_GROUP:-mopd_rep_then_logits_2026-08-23_11-57-
 
 # Pinned recipe (direct assignment; ignores inherited env).
 STAGE1_STEPS=30
-STAGE2_STEPS=20
+STAGE2_STEPS=21
 STAGE1_CKPT_STEP=$STAGE1_STEPS
 STAGE2_END_STEP=$((STAGE1_CKPT_STEP + STAGE2_STEPS))
 STAGE1_SAVE_FREQ=10
